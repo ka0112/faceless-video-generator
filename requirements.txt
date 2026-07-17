@@ -1,0 +1,6 @@
+streamlit
+huggingface_hub
+edge-tts
+moviepy==1.0.3
+requests
+pillow
