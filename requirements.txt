@@ -5,3 +5,4 @@ moviepy==1.0.3
 requests
 pillow
 json-repair
+duckduckgo_search
