@@ -1,7 +1,9 @@
 import os
 import json
+import random
 import asyncio
 import requests
+import urllib.parse
 import streamlit as st
 import json_repair
 from PIL import Image
@@ -15,19 +17,19 @@ from huggingface_hub import InferenceClient
 import edge_tts
 from moviepy.editor import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips
 
-# Extract HF token from Streamlit Secrets
+# Extract HF token from Streamlit Secrets for text generation
 HF_TOKEN = st.secrets["HF_TOKEN"]
 client = InferenceClient(token=HF_TOKEN)
 
 NICHE_CONFIGS = {
     "Geopolitics": {
         "voice": "en-GB-RyanNeural",
-        "style_suffix": ", gritty cinematic documentary style, dark atmospheric lighting, 8k, photorealistic",
+        "style_suffix": ", gritty cinematic documentary style, dark atmospheric lighting, photorealistic",
         "system_prompt": "You are a top geopolitical analyst. Write a high-tension, fact-grounded documentary narrative."
     },
     "Marketing": {
         "voice": "en-US-BrianNeural",
-        "style_suffix": ", modern sleek corporate vector illustration, technology startup aesthetic, high contrast",
+        "style_suffix": ", modern sleek corporate illustration, technology startup aesthetic, high contrast",
         "system_prompt": "You are an elite growth marketer. Write a fast-paced, highly engaging business case study breakdown."
     }
 }
@@ -63,29 +65,45 @@ def prepare_image_aspect(image_path, target_w, target_h):
         img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
         img.save(image_path)
     except Exception as e:
-        print(f"Image formatting warning: {e}")
+        print(f"Aspect formatting warning: {e}")
 
 def fetch_real_web_image(query, target_w, target_h, output_path):
-    """Searches real web photos (Google/DDG index) to avoid fake AI graphs and gibberish visuals."""
+    """Searches real web and stock photos to ensure authentic, non-hallucinated visuals."""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=6))
+            results = list(ddgs.images(query, max_results=8))
             for res in results:
                 img_url = res.get('image')
                 if not img_url:
                     continue
-                r = requests.get(img_url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
-                if r.status_code == 200 and len(r.content) > 8000:
+                r = requests.get(img_url, timeout=6, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+                if r.status_code == 200 and len(r.content) > 10000:
                     with open(output_path, 'wb') as f:
                         f.write(r.content)
                     prepare_image_aspect(output_path, target_w, target_h)
                     return True
     except Exception as e:
-        print(f"Web image search failed for '{query}': {e}")
+        print(f"Web image search notice for '{query}': {e}")
+    return False
+
+def fetch_free_pollinations_image(prompt, target_w, target_h, output_path):
+    """Fallback unlimited free AI generator completely bypassing Hugging Face credits."""
+    try:
+        clean_prompt = urllib.parse.quote(prompt)
+        seed = random.randint(1, 999999)
+        url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width={target_w}&height={target_h}&seed={seed}&nologo=true&model=flux"
+        r = requests.get(url, timeout=30)
+        if r.status_code == 200:
+            with open(output_path, 'wb') as f:
+                f.write(r.content)
+            prepare_image_aspect(output_path, target_w, target_h)
+            return True
+    except Exception as e:
+        print(f"Pollinations fallback notice: {e}")
     return False
 
 def apply_dynamic_motion(clip, target_w, target_h, zoom_in=True):
-    """Adds noticeable alternating Zoom-In / Zoom-Out motion."""
+    """Adds smooth alternating Zoom-In / Zoom-Out motion."""
     def zoom_fn(t):
         progress = t / max(clip.duration, 1)
         if zoom_in:
@@ -123,9 +141,8 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
     CRITICAL INSTRUCTIONS FOR HIGH VISUAL PACING:
     1. Break the narration into 20 to 35 short, distinct sequential visual beats.
     2. For EVERY scene, specify:
-       - 'search_query': A real-world search string for a REAL web photo/chart (e.g. "LEGO company profit chart graph", "LEGO factory assembly line", "Darth Vader Lego set").
-       - 'ai_prompt': A creative artistic prompt for AI generation.
-       - 'use_real_photo': Set to true if the scene needs a real chart, real product, real stats, or real event photo. Set to false if it's a creative narrative scene.
+       - 'search_query': A search string for a REAL web photo/chart/product (e.g. "LEGO company sales graph chart", "LEGO factory building", "Darth Vader Lego set").
+       - 'ai_prompt': A creative description for AI generation if web search is offline.
     
     Respond ONLY with a raw JSON object matching this exact structure:
     {{
@@ -134,8 +151,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
         {{
           "scene_number": 1,
           "search_query": "real web search query here",
-          "ai_prompt": "creative ai description here",
-          "use_real_photo": true
+          "ai_prompt": "creative ai description here"
         }}
       ]
     }}
@@ -189,7 +205,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
     except Exception as e:
         combined_audio = narration_clip
 
-    # 4. HYBRID VISUAL RETRIEVAL (REAL WEB PHOTOS + FLUX AI ART)
+    # 4. FREE HYBRID VISUAL RETRIEVAL (DDG SEARCH -> POLLINATIONS FALLBACK)
     image_clips = []
     try:
         for i, scene in enumerate(data["scenes"]):
@@ -203,19 +219,17 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
                 img.save(img_path)
                 image_retrieved = True
                 
-            # Priority 2: Real Web Photo (Graphs, Charts, Real Logos, Real World Data)
-            if not image_retrieved and scene.get("use_real_photo", True):
+            # Priority 2: Fetch Real Web / Stock Photo (DuckDuckGo)
+            if not image_retrieved:
                 query = scene.get("search_query", topic)
                 image_retrieved = fetch_real_web_image(query, target_w, target_h, img_path)
                 
-            # Priority 3: Fallback to FLUX AI Generation if web photo fails or isn't requested
+            # Priority 3: Fallback to Unlimited Free Pollinations AI Endpoint
             if not image_retrieved:
                 ai_p = scene.get("ai_prompt", topic) + config["style_suffix"]
-                image = client.text_to_image(prompt=ai_p, model="black-forest-labs/FLUX.1-schnell")
-                image.save(img_path)
-                prepare_image_aspect(img_path, target_w, target_h)
-            
-            # Apply alternating dynamic camera motion
+                image_retrieved = fetch_free_pollinations_image(ai_p, target_w, target_h, img_path)
+
+            # Apply alternating camera motion
             zoom_in_direction = (i % 2 == 0)
             raw_clip = ImageClip(img_path).set_duration(scene_duration)
             motion_clip = apply_dynamic_motion(raw_clip, target_w, target_h, zoom_in=zoom_in_direction)
@@ -238,7 +252,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
 # STREAMLIT UI
 st.set_page_config(page_title="Faceless Video Engine Pro", layout="wide")
 st.title("🎬 Faceless Video Engine Pro")
-st.subheader("High-Pacing Hybrid Engine: Real Web Photos + AI Art + Contextual Audio")
+st.subheader("High-Pacing Hybrid Engine: 100% Free Web Photos + Free AI Art + Contextual Audio")
 
 col1, col2 = st.columns([1, 1])
 
