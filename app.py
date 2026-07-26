@@ -1,14 +1,14 @@
 import os
 import json
-import time
 import asyncio
 import requests
 import streamlit as st
+import json_repair
 from huggingface_hub import InferenceClient
 import edge_tts
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 
-# Safely extract the secret token directly from the Streamlit Cloud Key Vault
+# Extract the secret token directly from Streamlit Secrets
 HF_TOKEN = st.secrets["HF_TOKEN"]
 client = InferenceClient(token=HF_TOKEN)
 
@@ -35,12 +35,14 @@ def build_video_pipeline(topic, detailed_context, niche):
     # 1. SCRIPT PRODUCTION ENGINE
     if detailed_context and detailed_context.strip():
         prompt = f"""
-        Adapt and condense the following source context into a short 3-scene video script:
+        Adapt and condense the following source text into a short 3-scene video script.
+        
+        SOURCE TEXT:
         {detailed_context}
         
-        You MUST respond ONLY with a raw valid JSON object matching this exact structure:
+        You MUST respond ONLY with a raw JSON object matching this exact structure:
         {{
-          "full_narration": "The entire script text written seamlessly here without scene indicators.",
+          "full_narration": "The entire script text written seamlessly here without scene breaks.",
           "scenes": [
             {{"scene_number": 1, "image_prompt": "Detailed description of a visual matching the first section"}},
             {{"scene_number": 2, "image_prompt": "Detailed description of a visual matching the middle section"}},
@@ -51,9 +53,9 @@ def build_video_pipeline(topic, detailed_context, niche):
     else:
         prompt = f"""
         Write a short 3-scene video script about: {topic}.
-        You MUST respond ONLY with a raw valid JSON object matching this exact structure:
+        You MUST respond ONLY with a raw JSON object matching this exact structure:
         {{
-          "full_narration": "The entire script text written seamlessly here without scene indicators.",
+          "full_narration": "The entire script text written seamlessly here without scene breaks.",
           "scenes": [
             {{"scene_number": 1, "image_prompt": "Detailed visual description for scene 1"}},
             {{"scene_number": 2, "image_prompt": "Detailed visual description for scene 2"}},
@@ -66,21 +68,21 @@ def build_video_pipeline(topic, detailed_context, niche):
         completion = client.chat.completions.create(
             model="Qwen/Qwen2.5-7B-Instruct",
             messages=[
-                {"role": "system", "content": config["system_prompt"] + " Return strictly raw valid JSON. Do not include markdown codeblocks."},
+                {"role": "system", "content": config["system_prompt"] + " Return strictly raw JSON. Do not include markdown codeblocks or unescaped inner quotes."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=1200
+            max_tokens=2500
         )
         raw_text = completion.choices[0].message.content.strip()
         
-        if raw_text.startswith("```json"):
-            raw_text = raw_text.removeprefix("```json").removesuffix("```").strip()
-        elif raw_text.startswith("```"):
-            raw_text = raw_text.removeprefix("```").removesuffix("```").strip()
+        # Auto-repair unescaped quotes, trailing control characters, or truncated strings
+        data = json_repair.loads(raw_text)
+        
+        if not isinstance(data, dict) or "full_narration" not in data or "scenes" not in data:
+            raise ValueError("Parsed output missing required keys: 'full_narration' or 'scenes'.")
             
-        data = json.loads(raw_text)
     except Exception as e:
-        return None, f"Text Generation Error: {str(e)}"
+        return None, f"Text Generation Error: {str(e)}\nRaw Response: {raw_text if 'raw_text' in locals() else 'None'}"
 
     # 2. AUDIO GENERATION
     try:
@@ -119,7 +121,7 @@ def build_video_pipeline(topic, detailed_context, niche):
     except Exception as e:
         return None, f"Compilation Render Error: {str(e)}"
 
-# Frontend Application Layout Layout
+# Application Dashboard Layout
 st.set_page_config(page_title="Faceless Video Engine", layout="wide")
 st.title("🎬 Free Automated Video Engine")
 st.subheader("100% Free Cloud Compute Pipeline (Powered by Streamlit)")
