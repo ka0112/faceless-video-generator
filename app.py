@@ -6,8 +6,7 @@ import requests
 import urllib.parse
 import streamlit as st
 import json_repair
-from PIL import Image
-from duckduckgo_search import DDGS
+from PIL import Image, ImageDraw
 
 # PIL / MoviePy compatibility monkeypatch for Pillow 10+
 if not hasattr(Image, 'ANTIALIAS'):
@@ -16,6 +15,7 @@ if not hasattr(Image, 'ANTIALIAS'):
 from huggingface_hub import InferenceClient
 import edge_tts
 from moviepy.editor import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips
+from duckduckgo_search import DDGS
 
 # Extract HF token from Streamlit Secrets for text generation
 HF_TOKEN = st.secrets["HF_TOKEN"]
@@ -67,6 +67,17 @@ def prepare_image_aspect(image_path, target_w, target_h):
     except Exception as e:
         print(f"Aspect formatting warning: {e}")
 
+def create_fallback_placeholder(target_w, target_h, output_path):
+    """Generates a clean local graphic as a bulletproof fail-safe so scene files ALWAYS exist."""
+    img = Image.new("RGB", (target_w, target_h), color=(20, 24, 33))
+    draw = ImageDraw.Draw(img)
+    # Draw simple dark decorative grid pattern
+    for x in range(0, target_w, 80):
+        draw.line([(x, 0), (x, target_h)], fill=(35, 42, 56), width=1)
+    for y in range(0, target_h, 80):
+        draw.line([(0, y), (target_w, y)], fill=(35, 42, 56), width=1)
+    img.save(output_path)
+
 def fetch_real_web_image(query, target_w, target_h, output_path):
     """Searches real web and stock photos to ensure authentic, non-hallucinated visuals."""
     try:
@@ -76,14 +87,14 @@ def fetch_real_web_image(query, target_w, target_h, output_path):
                 img_url = res.get('image')
                 if not img_url:
                     continue
-                r = requests.get(img_url, timeout=6, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-                if r.status_code == 200 and len(r.content) > 10000:
+                r = requests.get(img_url, timeout=5, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+                if r.status_code == 200 and len(r.content) > 8000:
                     with open(output_path, 'wb') as f:
                         f.write(r.content)
                     prepare_image_aspect(output_path, target_w, target_h)
                     return True
     except Exception as e:
-        print(f"Web image search notice for '{query}': {e}")
+        print(f"Web search skipped for '{query}': {e}")
     return False
 
 def fetch_free_pollinations_image(prompt, target_w, target_h, output_path):
@@ -92,14 +103,14 @@ def fetch_free_pollinations_image(prompt, target_w, target_h, output_path):
         clean_prompt = urllib.parse.quote(prompt)
         seed = random.randint(1, 999999)
         url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width={target_w}&height={target_h}&seed={seed}&nologo=true&model=flux"
-        r = requests.get(url, timeout=30)
-        if r.status_code == 200:
+        r = requests.get(url, timeout=12)
+        if r.status_code == 200 and len(r.content) > 5000:
             with open(output_path, 'wb') as f:
                 f.write(r.content)
             prepare_image_aspect(output_path, target_w, target_h)
             return True
     except Exception as e:
-        print(f"Pollinations fallback notice: {e}")
+        print(f"Pollinations skipped: {e}")
     return False
 
 def apply_dynamic_motion(clip, target_w, target_h, zoom_in=True):
@@ -132,7 +143,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
             prepare_image_aspect(custom_path, target_w, target_h)
             custom_image_paths.append(custom_path)
 
-    # 1. SCRIPT GENERATION ENGINE (20 - 35 DISTINCT SCENES)
+    # 1. SCRIPT GENERATION ENGINE
     prompt = f"""
     Adapt and condense the following source text or topic into a high-retention video script:
     TOPIC / SOURCE:
@@ -190,7 +201,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
     try:
         bgm_path = "bgm.mp3"
         bgm_url = BGM_MOOD_TRACKS[selected_mood]
-        res = requests.get(bgm_url, timeout=30)
+        res = requests.get(bgm_url, timeout=15)
         with open(bgm_path, "wb") as f:
             f.write(res.content)
 
@@ -200,12 +211,12 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
         else:
             bgm_clip = bgm_clip.subclip(0, total_duration)
             
-        bgm_clip = bgm_clip.volumex(0.10) # 10% soft volume
+        bgm_clip = bgm_clip.volumex(0.10) # 10% volume
         combined_audio = CompositeAudioClip([narration_clip, bgm_clip])
     except Exception as e:
         combined_audio = narration_clip
 
-    # 4. FREE HYBRID VISUAL RETRIEVAL (DDG SEARCH -> POLLINATIONS FALLBACK)
+    # 4. TRIPLE-LAYER VISUAL RETRIEVAL (CUSTOM -> DDG -> POLLINATIONS -> LOCAL PLACEHOLDER)
     image_clips = []
     try:
         for i, scene in enumerate(data["scenes"]):
@@ -224,10 +235,14 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
                 query = scene.get("search_query", topic)
                 image_retrieved = fetch_real_web_image(query, target_w, target_h, img_path)
                 
-            # Priority 3: Fallback to Unlimited Free Pollinations AI Endpoint
+            # Priority 3: Free Pollinations AI Endpoint
             if not image_retrieved:
                 ai_p = scene.get("ai_prompt", topic) + config["style_suffix"]
                 image_retrieved = fetch_free_pollinations_image(ai_p, target_w, target_h, img_path)
+
+            # Priority 4: GUARANTEED LOCAL FALLBACK (Ensures file ALWAYS exists)
+            if not image_retrieved or not os.path.exists(img_path):
+                create_fallback_placeholder(target_w, target_h, img_path)
 
             # Apply alternating camera motion
             zoom_in_direction = (i % 2 == 0)
