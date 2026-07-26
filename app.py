@@ -4,7 +4,12 @@ import asyncio
 import requests
 import streamlit as st
 import json_repair
+
+# PIL / MoviePy compatibility monkeypatch for Pillow 10+
 from PIL import Image
+if not hasattr(Image, 'ANTIALIAS'):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
+
 from huggingface_hub import InferenceClient
 import edge_tts
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
@@ -146,19 +151,18 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
         for i, scene in enumerate(data["scenes"]):
             img_path = f"scene_{i}.jpg"
             
-            # If user provided custom images, intersperse them into scenes
+            # Intersperse uploaded custom images if provided
             if custom_image_paths and (i % 2 == 0 or i >= len(data["scenes"]) - len(custom_image_paths)):
                 custom_selected = custom_image_paths[i % len(custom_image_paths)]
                 img = Image.open(custom_selected)
                 img.save(img_path)
             else:
-                # Generate via FLUX
                 final_prompt = scene["image_prompt"] + config["style_suffix"]
                 image = client.text_to_image(prompt=final_prompt, model="black-forest-labs/FLUX.1-schnell")
                 image.save(img_path)
                 prepare_image_aspect(img_path, target_w, target_h)
             
-            # Build clip with dynamic zoom motion
+            # Build clip with dynamic Ken Burns zoom motion
             raw_clip = ImageClip(img_path).set_duration(scene_duration)
             motion_clip = apply_ken_burns_motion(raw_clip, target_w, target_h)
             image_clips.append(motion_clip)
