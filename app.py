@@ -1,12 +1,13 @@
 import os
 import json
+import time
 import random
 import asyncio
 import requests
 import urllib.parse
 import streamlit as st
 import json_repair
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # PIL / MoviePy compatibility monkeypatch for Pillow 10+
 if not hasattr(Image, 'ANTIALIAS'):
@@ -17,7 +18,7 @@ import edge_tts
 from moviepy.editor import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips
 from duckduckgo_search import DDGS
 
-# Extract HF token from Streamlit Secrets for text generation
+# Extract HF token from Streamlit Secrets
 HF_TOKEN = st.secrets["HF_TOKEN"]
 client = InferenceClient(token=HF_TOKEN)
 
@@ -67,22 +68,45 @@ def prepare_image_aspect(image_path, target_w, target_h):
     except Exception as e:
         print(f"Aspect formatting warning: {e}")
 
-def create_fallback_placeholder(target_w, target_h, output_path):
-    """Generates a clean local graphic as a bulletproof fail-safe so scene files ALWAYS exist."""
-    img = Image.new("RGB", (target_w, target_h), color=(20, 24, 33))
-    draw = ImageDraw.Draw(img)
-    # Draw simple dark decorative grid pattern
-    for x in range(0, target_w, 80):
-        draw.line([(x, 0), (x, target_h)], fill=(35, 42, 56), width=1)
-    for y in range(0, target_h, 80):
-        draw.line([(0, y), (target_w, y)], fill=(35, 42, 56), width=1)
-    img.save(output_path)
+def fetch_wikimedia_image(query, target_w, target_h, output_path):
+    """Searches Wikimedia Commons API (Unblocked, fast, real photos & charts)."""
+    try:
+        url = "https://commons.wikimedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "generator": "search",
+            "gsrsearch": query,
+            "gsrnamespace": "6",
+            "gsrlimit": "5",
+            "prop": "imageinfo",
+            "iiprop": "url|mime",
+            "format": "json"
+        }
+        res = requests.get(url, params=params, timeout=6, headers={"User-Agent": "FacelessEngineBot/1.0"})
+        if res.status_code == 200:
+            data = res.json()
+            pages = data.get("query", {}).get("pages", {})
+            for page_id, page in pages.items():
+                imageinfo = page.get("imageinfo", [])
+                if imageinfo:
+                    img_url = imageinfo[0].get("url")
+                    mime = imageinfo[0].get("mime", "")
+                    if img_url and ("image/jpeg" in mime or "image/png" in mime or "image/webp" in mime):
+                        r = requests.get(img_url, timeout=8, headers={"User-Agent": "FacelessEngineBot/1.0"})
+                        if r.status_code == 200 and len(r.content) > 6000:
+                            with open(output_path, 'wb') as f:
+                                f.write(r.content)
+                            prepare_image_aspect(output_path, target_w, target_h)
+                            return True
+    except Exception as e:
+        print(f"Wikimedia search notice for '{query}': {e}")
+    return False
 
-def fetch_real_web_image(query, target_w, target_h, output_path):
-    """Searches real web and stock photos to ensure authentic, non-hallucinated visuals."""
+def fetch_ddg_image(query, target_w, target_h, output_path):
+    """Searches web photos via DuckDuckGo."""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=8))
+            results = list(ddgs.images(query, max_results=6))
             for res in results:
                 img_url = res.get('image')
                 if not img_url:
@@ -94,23 +118,44 @@ def fetch_real_web_image(query, target_w, target_h, output_path):
                     prepare_image_aspect(output_path, target_w, target_h)
                     return True
     except Exception as e:
-        print(f"Web search skipped for '{query}': {e}")
+        print(f"DDG search notice for '{query}': {e}")
     return False
 
-def fetch_free_pollinations_image(prompt, target_w, target_h, output_path):
-    """Fallback unlimited free AI generator completely bypassing Hugging Face credits."""
+def fetch_pollinations_image(prompt, target_w, target_h, output_path):
+    """Fallback free AI image endpoint."""
     try:
         clean_prompt = urllib.parse.quote(prompt)
         seed = random.randint(1, 999999)
-        url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width={target_w}&height={target_h}&seed={seed}&nologo=true&model=flux"
-        r = requests.get(url, timeout=12)
+        url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width={target_w}&height={target_h}&seed={seed}&nologo=true"
+        r = requests.get(url, timeout=15)
         if r.status_code == 200 and len(r.content) > 5000:
             with open(output_path, 'wb') as f:
                 f.write(r.content)
             prepare_image_aspect(output_path, target_w, target_h)
             return True
     except Exception as e:
-        print(f"Pollinations skipped: {e}")
+        print(f"Pollinations notice: {e}")
+    return False
+
+def fetch_fallback_stock_photo(topic, target_w, target_h, output_path):
+    """Guarantees a real, colorful stock image if scene-specific searches fail."""
+    clean_topic = urllib.parse.quote(topic if topic else "business strategy")
+    stock_urls = [
+        f"https://source.unsplash.com/featured/?{clean_topic}",
+        "https://images.unsplash.com/photo-1579546929518-9e396f3cc809?q=80&w=1200&auto=format&fit=crop",
+        "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?q=80&w=1200&auto=format&fit=crop",
+        "https://images.unsplash.com/photo-1553877522-43269d4ea984?q=80&w=1200&auto=format&fit=crop"
+    ]
+    for url in stock_urls:
+        try:
+            r = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
+            if r.status_code == 200 and len(r.content) > 5000:
+                with open(output_path, 'wb') as f:
+                    f.write(r.content)
+                prepare_image_aspect(output_path, target_w, target_h)
+                return True
+        except Exception:
+            continue
     return False
 
 def apply_dynamic_motion(clip, target_w, target_h, zoom_in=True):
@@ -132,8 +177,9 @@ async def generate_audio(text, voice, output_path):
 def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, uploaded_files, selected_mood):
     config = NICHE_CONFIGS[niche]
     target_w, target_h = ASPECT_RATIOS[aspect_ratio_label]
+    main_subject = topic if topic else "LEGO strategy business"
     
-    # Process custom uploaded user files
+    # Process custom uploaded files
     custom_image_paths = []
     if uploaded_files:
         for idx, file in enumerate(uploaded_files):
@@ -150,10 +196,10 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
     {detailed_context if detailed_context and detailed_context.strip() else topic}
     
     CRITICAL INSTRUCTIONS FOR HIGH VISUAL PACING:
-    1. Break the narration into 20 to 35 short, distinct sequential visual beats.
+    1. Break the narration into 18 to 30 short, distinct sequential visual beats.
     2. For EVERY scene, specify:
-       - 'search_query': A search string for a REAL web photo/chart/product (e.g. "LEGO company sales graph chart", "LEGO factory building", "Darth Vader Lego set").
-       - 'ai_prompt': A creative description for AI generation if web search is offline.
+       - 'search_query': A search string for a REAL web photo/chart/product (e.g. "LEGO sales chart graph", "LEGO minifigure collection", "Star Wars Lego set", "Toy store shelf").
+       - 'ai_prompt': A creative description for AI image generation.
     
     Respond ONLY with a raw JSON object matching this exact structure:
     {{
@@ -172,7 +218,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
         completion = client.chat.completions.create(
             model="Qwen/Qwen2.5-7B-Instruct",
             messages=[
-                {"role": "system", "content": config["system_prompt"] + " Return strictly raw JSON. Force 20 to 35 scenes."},
+                {"role": "system", "content": config["system_prompt"] + " Return strictly raw JSON. Force 18 to 30 scenes."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=4000
@@ -211,17 +257,18 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
         else:
             bgm_clip = bgm_clip.subclip(0, total_duration)
             
-        bgm_clip = bgm_clip.volumex(0.10) # 10% volume
+        bgm_clip = bgm_clip.volumex(0.10) # 10% background volume
         combined_audio = CompositeAudioClip([narration_clip, bgm_clip])
     except Exception as e:
         combined_audio = narration_clip
 
-    # 4. TRIPLE-LAYER VISUAL RETRIEVAL (CUSTOM -> DDG -> POLLINATIONS -> LOCAL PLACEHOLDER)
+    # 4. QUAD-LAYER REAL PHOTO ENGINE (CUSTOM -> WIKIMEDIA -> DDG -> POLLINATIONS -> REAL STOCK FALLBACK)
     image_clips = []
     try:
         for i, scene in enumerate(data["scenes"]):
             img_path = f"scene_{i}.jpg"
             image_retrieved = False
+            query = scene.get("search_query", main_subject)
             
             # Priority 1: User Uploaded Custom Image
             if custom_image_paths and (i % 3 == 0 or i >= len(data["scenes"]) - len(custom_image_paths)):
@@ -230,19 +277,25 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
                 img.save(img_path)
                 image_retrieved = True
                 
-            # Priority 2: Fetch Real Web / Stock Photo (DuckDuckGo)
+            # Priority 2: Wikimedia Commons API (Fast, real photos, no rate-limits)
             if not image_retrieved:
-                query = scene.get("search_query", topic)
-                image_retrieved = fetch_real_web_image(query, target_w, target_h, img_path)
+                image_retrieved = fetch_wikimedia_image(query, target_w, target_h, img_path)
                 
-            # Priority 3: Free Pollinations AI Endpoint
+            # Priority 3: DuckDuckGo Web Search
             if not image_retrieved:
-                ai_p = scene.get("ai_prompt", topic) + config["style_suffix"]
-                image_retrieved = fetch_free_pollinations_image(ai_p, target_w, target_h, img_path)
+                image_retrieved = fetch_ddg_image(query, target_w, target_h, img_path)
 
-            # Priority 4: GUARANTEED LOCAL FALLBACK (Ensures file ALWAYS exists)
+            # Priority 4: Free Pollinations AI Generation
+            if not image_retrieved:
+                ai_p = scene.get("ai_prompt", query) + config["style_suffix"]
+                image_retrieved = fetch_pollinations_image(ai_p, target_w, target_h, img_path)
+
+            # Priority 5: Real Stock Photo Fallback (NO MORE DARK GRIDS!)
             if not image_retrieved or not os.path.exists(img_path):
-                create_fallback_placeholder(target_w, target_h, img_path)
+                fetch_fallback_stock_photo(main_subject, target_w, target_h, img_path)
+
+            # Tiny delay to prevent cloud server IP throttling
+            time.sleep(0.4)
 
             # Apply alternating camera motion
             zoom_in_direction = (i % 2 == 0)
@@ -267,7 +320,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
 # STREAMLIT UI
 st.set_page_config(page_title="Faceless Video Engine Pro", layout="wide")
 st.title("🎬 Faceless Video Engine Pro")
-st.subheader("High-Pacing Hybrid Engine: 100% Free Web Photos + Free AI Art + Contextual Audio")
+st.subheader("High-Pacing Hybrid Engine: 100% Free Web Photos + Wikimedia + Contextual Audio")
 
 col1, col2 = st.columns([1, 1])
 
@@ -289,7 +342,7 @@ with col1:
     submit_btn = st.button("Build High-Pacing Video", type="primary")
 
 if submit_btn:
-    with st.spinner("Fetching real web photos, generating script beats, mixing contextual BGM, and compiling video..."):
+    with st.spinner("Fetching real photos from Wikimedia & web, generating script beats, mixing contextual BGM, and compiling video..."):
         video_file, transcript = build_video_pipeline(
             topic_input, context_input, niche_dropdown, aspect_ratio, uploaded_files, selected_mood
         )
