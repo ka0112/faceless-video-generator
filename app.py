@@ -26,12 +26,12 @@ NICHE_CONFIGS = {
     "Geopolitics": {
         "voice": "en-GB-RyanNeural",
         "style_suffix": ", gritty cinematic documentary style, dark atmospheric lighting, photorealistic",
-        "system_prompt": "You are a top geopolitical analyst. Write a high-tension, fact-grounded documentary narrative."
+        "system_prompt": "You are a top geopolitical analyst."
     },
     "Marketing": {
         "voice": "en-US-BrianNeural",
         "style_suffix": ", modern sleek corporate illustration, technology startup aesthetic, high contrast",
-        "system_prompt": "You are an elite growth marketer. Write a fast-paced, highly engaging business case study breakdown."
+        "system_prompt": "You are an elite growth marketer."
     }
 }
 
@@ -69,7 +69,7 @@ def prepare_image_aspect(image_path, target_w, target_h):
         print(f"Aspect formatting warning: {e}")
 
 def fetch_wikimedia_image(query, target_w, target_h, output_path):
-    """Searches Wikimedia Commons API (Unblocked, fast, real photos & charts)."""
+    """Searches Wikimedia Commons API for real photos and charts."""
     try:
         url = "https://commons.wikimedia.org/w/api.php"
         params = {
@@ -122,12 +122,12 @@ def fetch_ddg_image(query, target_w, target_h, output_path):
     return False
 
 def fetch_pollinations_image(prompt, target_w, target_h, output_path):
-    """Fallback free AI image endpoint."""
+    """Fallback free AI image generator."""
     try:
         clean_prompt = urllib.parse.quote(prompt)
         seed = random.randint(1, 999999)
         url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width={target_w}&height={target_h}&seed={seed}&nologo=true"
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, timeout=12)
         if r.status_code == 200 and len(r.content) > 5000:
             with open(output_path, 'wb') as f:
                 f.write(r.content)
@@ -135,27 +135,6 @@ def fetch_pollinations_image(prompt, target_w, target_h, output_path):
             return True
     except Exception as e:
         print(f"Pollinations notice: {e}")
-    return False
-
-def fetch_fallback_stock_photo(topic, target_w, target_h, output_path):
-    """Guarantees a real, colorful stock image if scene-specific searches fail."""
-    clean_topic = urllib.parse.quote(topic if topic else "business strategy")
-    stock_urls = [
-        f"https://source.unsplash.com/featured/?{clean_topic}",
-        "https://images.unsplash.com/photo-1579546929518-9e396f3cc809?q=80&w=1200&auto=format&fit=crop",
-        "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?q=80&w=1200&auto=format&fit=crop",
-        "https://images.unsplash.com/photo-1553877522-43269d4ea984?q=80&w=1200&auto=format&fit=crop"
-    ]
-    for url in stock_urls:
-        try:
-            r = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
-            if r.status_code == 200 and len(r.content) > 5000:
-                with open(output_path, 'wb') as f:
-                    f.write(r.content)
-                prepare_image_aspect(output_path, target_w, target_h)
-                return True
-        except Exception:
-            continue
     return False
 
 def apply_dynamic_motion(clip, target_w, target_h, zoom_in=True):
@@ -177,7 +156,6 @@ async def generate_audio(text, voice, output_path):
 def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, uploaded_files, selected_mood):
     config = NICHE_CONFIGS[niche]
     target_w, target_h = ASPECT_RATIOS[aspect_ratio_label]
-    main_subject = topic if topic else "LEGO strategy business"
     
     # Process custom uploaded files
     custom_image_paths = []
@@ -189,61 +167,73 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
             prepare_image_aspect(custom_path, target_w, target_h)
             custom_image_paths.append(custom_path)
 
-    # 1. SCRIPT GENERATION ENGINE
-    prompt = f"""
-    Adapt and condense the following source text or topic into a high-retention video script:
-    TOPIC / SOURCE:
-    {detailed_context if detailed_context and detailed_context.strip() else topic}
-    
-    CRITICAL INSTRUCTIONS FOR HIGH VISUAL PACING:
-    1. Break the narration into 18 to 30 short, distinct sequential visual beats.
-    2. For EVERY scene, specify:
-       - 'search_query': A search string for a REAL web photo/chart/product (e.g. "LEGO sales chart graph", "LEGO minifigure collection", "Star Wars Lego set", "Toy store shelf").
-       - 'ai_prompt': A creative description for AI image generation.
-    
-    Respond ONLY with a raw JSON object matching this exact structure:
-    {{
-      "full_narration": "The complete narration text written seamlessly.",
-      "scenes": [
+    # 1. SCRIPT ENGINE: PRESERVE FULL CONTEXT LENGTH
+    if detailed_context and detailed_context.strip():
+        # Keep 100% of user text verbatim so voiceover length is maintained!
+        full_narration = detailed_context.strip()
+        
+        prompt = f"""
+        Analyze this video narration text and break it into 25 to 35 sequential visual scene search queries.
+        NARRATION SAMPLE:
+        {full_narration[:2000]}
+        
+        Respond ONLY with a raw JSON array of objects:
+        [
+          {{"scene_number": 1, "search_query": "LEGO company logo building", "ai_prompt": "LEGO corporate office exterior"}},
+          {{"scene_number": 2, "search_query": "LEGO sales chart graph", "ai_prompt": "Financial chart showing toy sales growth"}}
+        ]
+        """
+    else:
+        prompt = f"""
+        Write a detailed, long-form video script about: {topic}.
+        Respond ONLY with a raw JSON object matching this structure:
         {{
-          "scene_number": 1,
-          "search_query": "real web search query here",
-          "ai_prompt": "creative ai description here"
+          "full_narration": "Full narration text here...",
+          "scenes": [
+            {{"scene_number": 1, "search_query": "LEGO search query", "ai_prompt": "AI prompt"}}
+          ]
         }}
-      ]
-    }}
-    """
+        """
 
     try:
         completion = client.chat.completions.create(
             model="Qwen/Qwen2.5-7B-Instruct",
             messages=[
-                {"role": "system", "content": config["system_prompt"] + " Return strictly raw JSON. Force 18 to 30 scenes."},
+                {"role": "system", "content": config["system_prompt"] + " Return strictly raw JSON with 25-35 visual scenes."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=4000
+            max_tokens=3000
         )
         raw_text = completion.choices[0].message.content.strip()
-        data = json_repair.loads(raw_text)
+        parsed_data = json_repair.loads(raw_text)
         
-        if not isinstance(data, dict) or "full_narration" not in data or "scenes" not in data:
-            raise ValueError("Output missing required keys.")
+        if detailed_context and detailed_context.strip():
+            # If user provided context, narration is preserved verbatim
+            if isinstance(parsed_data, list):
+                scenes = parsed_data
+            elif isinstance(parsed_data, dict) and "scenes" in parsed_data:
+                scenes = parsed_data["scenes"]
+            else:
+                scenes = [{"scene_number": i+1, "search_query": topic or "LEGO", "ai_prompt": topic or "LEGO"} for i in range(25)]
+        else:
+            full_narration = parsed_data.get("full_narration", "")
+            scenes = parsed_data.get("scenes", [])
             
     except Exception as e:
         return None, f"Script Generation Error: {str(e)}"
 
-    # 2. VOICE OVER GENERATION
+    # 2. VOICE OVER GENERATION (FULL LENGTH)
     try:
         audio_path = "narration.mp3"
-        asyncio.run(generate_audio(data["full_narration"], config["voice"], audio_path))
+        asyncio.run(generate_audio(full_narration, config["voice"], audio_path))
         
         narration_clip = AudioFileClip(audio_path)
         total_duration = narration_clip.duration
-        scene_duration = total_duration / len(data["scenes"])
+        scene_duration = total_duration / len(scenes)
     except Exception as e:
         return None, f"Audio Generation Error: {str(e)}"
 
-    # 3. CONTEXTUAL BACKGROUND MUSIC ENGINE
+    # 3. BACKGROUND MUSIC ENGINE
     try:
         bgm_path = "bgm.mp3"
         bgm_url = BGM_MOOD_TRACKS[selected_mood]
@@ -257,31 +247,33 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
         else:
             bgm_clip = bgm_clip.subclip(0, total_duration)
             
-        bgm_clip = bgm_clip.volumex(0.10) # 10% background volume
+        bgm_clip = bgm_clip.volumex(0.10) # 10% volume
         combined_audio = CompositeAudioClip([narration_clip, bgm_clip])
     except Exception as e:
         combined_audio = narration_clip
 
-    # 4. QUAD-LAYER REAL PHOTO ENGINE (CUSTOM -> WIKIMEDIA -> DDG -> POLLINATIONS -> REAL STOCK FALLBACK)
+    # 4. QUAD-LAYER VISUAL RETRIEVAL (CUSTOM -> WIKIMEDIA -> DDG -> POLLINATIONS)
     image_clips = []
+    main_subject = topic if topic else "LEGO bricks strategy"
+    
     try:
-        for i, scene in enumerate(data["scenes"]):
+        for i, scene in enumerate(scenes):
             img_path = f"scene_{i}.jpg"
             image_retrieved = False
             query = scene.get("search_query", main_subject)
             
-            # Priority 1: User Uploaded Custom Image
-            if custom_image_paths and (i % 3 == 0 or i >= len(data["scenes"]) - len(custom_image_paths)):
+            # Priority 1: User Uploaded Custom Images
+            if custom_image_paths and (i % 3 == 0 or i >= len(scenes) - len(custom_image_paths)):
                 custom_selected = custom_image_paths[i % len(custom_image_paths)]
                 img = Image.open(custom_selected)
                 img.save(img_path)
                 image_retrieved = True
                 
-            # Priority 2: Wikimedia Commons API (Fast, real photos, no rate-limits)
+            # Priority 2: Wikimedia Commons Search
             if not image_retrieved:
                 image_retrieved = fetch_wikimedia_image(query, target_w, target_h, img_path)
                 
-            # Priority 3: DuckDuckGo Web Search
+            # Priority 3: DuckDuckGo Search
             if not image_retrieved:
                 image_retrieved = fetch_ddg_image(query, target_w, target_h, img_path)
 
@@ -290,12 +282,11 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
                 ai_p = scene.get("ai_prompt", query) + config["style_suffix"]
                 image_retrieved = fetch_pollinations_image(ai_p, target_w, target_h, img_path)
 
-            # Priority 5: Real Stock Photo Fallback (NO MORE DARK GRIDS!)
+            # Priority 5: Main Subject Fallback (Guarantees NO pastel placeholders!)
             if not image_retrieved or not os.path.exists(img_path):
-                fetch_fallback_stock_photo(main_subject, target_w, target_h, img_path)
+                fetch_wikimedia_image(main_subject, target_w, target_h, img_path)
 
-            # Tiny delay to prevent cloud server IP throttling
-            time.sleep(0.4)
+            time.sleep(0.3)
 
             # Apply alternating camera motion
             zoom_in_direction = (i % 2 == 0)
@@ -312,7 +303,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
         video = concatenate_videoclips(image_clips, method="compose")
         video = video.set_audio(combined_audio)
         video.write_videofile(final_video_path, fps=15, codec="libx264", audio_codec="aac")
-        return final_video_path, data["full_narration"]
+        return final_video_path, full_narration
             
     except Exception as e:
         return None, f"Video Compilation Error: {str(e)}"
@@ -320,7 +311,7 @@ def build_video_pipeline(topic, detailed_context, niche, aspect_ratio_label, upl
 # STREAMLIT UI
 st.set_page_config(page_title="Faceless Video Engine Pro", layout="wide")
 st.title("🎬 Faceless Video Engine Pro")
-st.subheader("High-Pacing Hybrid Engine: 100% Free Web Photos + Wikimedia + Contextual Audio")
+st.subheader("Full-Length Video Pipeline: Uncompressed Narration + Real Web Photos + BGM")
 
 col1, col2 = st.columns([1, 1])
 
@@ -342,14 +333,14 @@ with col1:
     submit_btn = st.button("Build High-Pacing Video", type="primary")
 
 if submit_btn:
-    with st.spinner("Fetching real photos from Wikimedia & web, generating script beats, mixing contextual BGM, and compiling video..."):
+    with st.spinner("Processing full-length narration, pulling real photos, mixing BGM, and compiling video..."):
         video_file, transcript = build_video_pipeline(
             topic_input, context_input, niche_dropdown, aspect_ratio, uploaded_files, selected_mood
         )
         
         with col2:
             if video_file:
-                st.success("High-Pacing Asset Rendered Successfully!")
+                st.success("Full-Length Asset Rendered Successfully!")
                 st.video(video_file)
                 st.text_area("Generated Script Transcript", value=transcript, height=200, disabled=True)
             else:
